@@ -1,0 +1,7 @@
+{
+    "files.associations": {
+        "stm.h": "c",
+        "arduino.h": "c",
+        "wire.h": "c"
+    }
+}
