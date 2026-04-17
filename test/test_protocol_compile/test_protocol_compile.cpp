@@ -4,6 +4,7 @@
 #include "app/NodeConfig.h"
 #include "app/Protocol.h"
 #include "states/InitState.h"
+#include "states/StateRegistry.h"
 #include "reaction_Esp.h"
 
 static_assert(MAX_LIGHTS == 8, "MAX_LIGHTS must remain 8");
@@ -53,6 +54,10 @@ static_assert(std::is_same<typename std::remove_reference<decltype(((Ctx *)0)->t
 void setup() {
     Serial.begin(115200);
     message_t msg = {};
+    bool registryOk = stateEnterFunctionFor(STATE_INIT, ROLE_MASTER) != nullptr &&
+                      stateEnterFunctionFor(STATE_CLASSIC_1_OF_N, ROLE_MASTER) != nullptr &&
+                      stateEnterFunctionFor(STATE_CLASSIC_1_OF_N, ROLE_LIGHT) != nullptr;
+    Serial.println(registryOk ? "state registry test passed" : "state registry test failed");
     uint8_t masterMac[6] = {0xCC, 0x7B, 0x5C, 0x4F, 0xD2, 0x84};
     uint8_t firstSlaveMac[6] = {0xD8, 0xBF, 0xC0, 0x17, 0xA6, 0x9A};
     bool lookupOk = (lightIdByMacAddress(masterMac) == 0) && (lightIdByMacAddress(firstSlaveMac) == 1);
@@ -74,6 +79,10 @@ void setup() {
     bool stateOk = stateMsg.messageType == MSG_STATE_SET &&
                    stateMsg.stateId == STATE_CLASSIC_1_OF_N &&
                    stateMsg.groupId == GROUP_A;
+
+    message_t ack = makeRegisterAckMessage(2, GROUP_A);
+    bool ackOk = ack.messageType == MSG_REGISTER_ACK && ack.targetLightId == 2 && ack.groupId == GROUP_A;
+    Serial.println(ackOk ? "register ack test passed" : "register ack test failed");
 
     Serial.println(registerOk && stateOk ? "protocol helper test passed" : "protocol helper test failed");
 }

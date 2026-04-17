@@ -9,6 +9,8 @@
 #include <Adafruit_BMP280.h>
 #include <Adafruit_NeoPixel.h>
 #include "reaction_Esp.h"
+#include "app/AppEvents.h"
+#include "app/Protocol.h"
 #include "app/NodeConfig.h"
 #include "stm.h"
 #include "states/InitState.h"
@@ -33,6 +35,7 @@ Adafruit_BMP280 bmp; // I2C
 Adafruit_NeoPixel strip = Adafruit_NeoPixel(8, 0, NEO_GRB + NEO_KHZ800);
 
 static struct Ctx Data;
+static app_event_queue_t EventQueue;
 uint8_t changes = 0;
 
 /**
@@ -84,43 +87,28 @@ void messageSent(uint8_t *macAddr, uint8_t status) {
 }
 
 void messageReceived(uint8_t* macAddr, uint8_t* incomingData, uint8_t len){
-    uint8_t id = UNKNOWN_LIGHT_ID;
-    uint8_t targetId = UNKNOWN_LIGHT_ID;
-
-    if(len != sizeof(ReceivedMessage)){
+    (void)macAddr;
+    if (!isExpectedMessageSize(len)) {
       Serial.print("Unexpected message size: ");
       Serial.println(len);
       return;
     }
 
     memcpy(&ReceivedMessage, incomingData, sizeof(ReceivedMessage));
-    Serial.printf("Incoming Message from: %02X:%02X:%02X:%02X:%02X:%02X \n\r", 
-            macAddr[0], macAddr[1], macAddr[2], macAddr[3], macAddr[4], macAddr[5]);    
-    Serial.print("Message recived ");
-
-    if(!messageMatchesGroup(Data.groupId, ReceivedMessage.groupId)){
+    if (!isValidMessageForGroup(&ReceivedMessage, Data.groupId)) {
       Serial.println("ignored, different group");
       return;
     }
 
-    id = idByMacAdress(macAddr);
-    targetId = ReceivedMessage.lightId < MAX_LIGHTS ? ReceivedMessage.lightId : id;
-
-    if(targetId < MAX_LIGHTS){
-      
-      memcpy(&Data.light[targetId], &ReceivedMessage, sizeof(ReceivedMessage));
-      // Data.light[id].lightId = ReceivedMessage.lightId;
-      // Data.light[id].squeezed = ReceivedMessage.squeezed;
-      // Data.light[id].tap = ReceivedMessage.tap;
-      // Data.light[id].modeAB = ReceivedMessage.modeAB;
-      // Data.light[id].touched = ReceivedMessage.touched;
-      // Data.light[id].color_r = ReceivedMessage.color_r;
-      // Data.light[id].color_g = ReceivedMessage.color_g;
-      // Data.light[id].color_b = ReceivedMessage.color_b;
-      changes = 1;
-      Serial.println(Data.light[targetId].color_b);
-    }else{
-      Serial.println("ignored, unknown sender/target");
+    app_event_t event = {};
+    event.eventId = EVENT_NETWORK_MESSAGE;
+    event.stateId = ReceivedMessage.stateId;
+    event.groupId = ReceivedMessage.groupId;
+    event.sourceLightId = ReceivedMessage.sourceLightId;
+    event.targetLightId = ReceivedMessage.targetLightId;
+    event.message = ReceivedMessage;
+    if (!appEventQueuePush(&EventQueue, &event)) {
+      Serial.println("ignored, event queue full");
     }
 }
 
@@ -128,17 +116,15 @@ void setup(){
     
     Data.lightId = 2;
     
-    //pinMode(14, INPUT); //Interrupt-Pin ADXL345
-    attachInterrupt(digitalPinToInterrupt(13), ISR1, RISING);
+    attachInterrupt(digitalPinToInterrupt(PIN_ADXL_INTERRUPT), ISR1, RISING);
 
-    //pinMode(13, INPUT); //Interrupt-Pin PN532
-    attachInterrupt(digitalPinToInterrupt(12), ISR2, FALLING);
+    attachInterrupt(digitalPinToInterrupt(PIN_PN532_INTERRUPT), ISR2, FALLING);
 
     pinMode(0, OUTPUT);
     pinMode(2, OUTPUT);
-    pinMode(14, INPUT);//AB
-    pinMode(15, INPUT);//Touch
-    pinMode(16, INPUT);//Master Jumper
+    pinMode(PIN_GROUP_SELECT, INPUT);//AB
+    pinMode(PIN_TOUCH, INPUT);//Touch
+    pinMode(PIN_MASTER_SELECT, INPUT);//Master Jumper
 
     digitalWrite(0, LOW);
     //digitalWrite(2, HIGH);
@@ -153,13 +139,18 @@ void setup(){
     u8g2.drawStr(0,10,"Hello!");
     u8g2.sendBuffer();
 
-    Data.isMaster = 0;
-    if(digitalRead(16) == 1){
+    Data.role = roleFromMasterSwitch(digitalRead(PIN_MASTER_SELECT));
+    Data.isMaster = Data.role == ROLE_MASTER;
+    if(Data.isMaster == 1){
        Serial.println("MASTER");
-       Data.isMaster = 1;
     }
 
-    Data.groupId = groupFromSwitch(digitalRead(14));
+    Data.groupId = groupFromSwitch(digitalRead(PIN_GROUP_SELECT));
+    Data.requestedStateId = STATE_INIT;
+    Data.stateId = STATE_INIT;
+    Data.activeLightId = NO_ACTIVE_LIGHT;
+    Data.registeredLights[Data.lightId] = 1;
+    appEventQueueInit(&EventQueue);
     Data.light[Data.lightId].lightId = Data.lightId;
     Data.light[Data.lightId].groupId = Data.groupId;
     Serial.print("GROUP ");
@@ -275,13 +266,35 @@ void setup(){
  
 void loop(){
     strip.clear();
+    app_event_t event = {};
+    while (appEventQueuePop(&EventQueue, &event)) {
+        if (event.eventId == EVENT_NETWORK_MESSAGE && event.message.messageType == MSG_STATE_SET) {
+            Data.requestedStateId = event.message.stateId;
+        }
+        if (event.eventId == EVENT_NETWORK_MESSAGE) {
+            Data.light[0] = event.message;
+            changes = 1;
+        }
+        if (Data.role == ROLE_MASTER && event.message.messageType == MSG_REGISTER) {
+            uint8_t lightId = event.message.sourceLightId;
+            if (lightId < MAX_LIGHTS) {
+                Data.registeredLights[lightId] = 1;
+                message_t ack = makeRegisterAckMessage(lightId, Data.groupId);
+                uint8_t peerAddress[6] = {};
+                if (copyPeerAddressForLight(lightId, peerAddress)) {
+                    esp_now_send(peerAddress, (uint8_t*)&ack, sizeof(ack));
+                }
+            }
+        }
+        cfsm_event(&stateMachine, event.eventId);
+    }
     cfsm_process(&stateMachine);
 
     uint8_t DisplayFlag = 0;
     byte AccInt1 = 0;
     //byte AccInt2 = 0;
     //uint8_t light_id = Data.lightId;
-    Data.groupId = groupFromSwitch(digitalRead(14));
+    Data.groupId = groupFromSwitch(digitalRead(PIN_GROUP_SELECT));
     Data.light[Data.lightId].lightId = Data.lightId;
     Data.light[Data.lightId].groupId = Data.groupId;
 
@@ -289,7 +302,7 @@ void loop(){
           
     //u8g2.sendBuffer();
     
-    if(digitalRead(15)==1){
+    if(digitalRead(PIN_TOUCH)==1){
       Data.light[Data.lightId].touched = 1;
       Serial.println("Touch!");
     }else{
