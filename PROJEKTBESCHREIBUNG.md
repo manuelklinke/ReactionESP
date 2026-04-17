@@ -36,8 +36,12 @@ Aktuell sind die wichtigsten technischen Bausteine im Aufbau:
 - Ausgabe über NeoPixel-LEDs
 - vorbereitete RFID/NFC-Anbindung über PN532
 - vorbereitete Struktur für bis zu 8 Reaktionslichter
+- aktive State-Machine mit Init-State
+- Anmeldung der Reaktionslichter beim Master
+- Verteilung der aktiven `stateId` durch den Master
+- erster Spiel-State "Klassiker: 1 aus n"
 
-Die vorhandene Spiellogik ist noch prototypisch. Die bisherige Funktion zeigt bereits, dass ein Tap erkannt, an den Master gemeldet und in eine LED-Reaktion übersetzt werden kann. Die endgültige Spiellogik soll schrittweise in klar getrennte Spielmodi überführt werden.
+Die erste Spiellogik ist in klar getrennte Spielmodi ueberfuehrt. Der Klassiker "1 aus n" nutzt getrennte Master- und Light-States, waehrend Sensor- und Netzwerkereignisse ueber die State-Machine verarbeitet werden.
 
 ## State-Architektur
 
@@ -62,7 +66,7 @@ Der Master muss ausserdem zyklisch in einem eigenen Task oder einer klar getrenn
 
 ### Klassiker: 1 aus n
 
-Status: geplant als erster vollständiger Spielmodus.
+Status: erste umgesetzte Spiellogik.
 
 Bei diesem Spiel leuchtet immer genau eines von n Reaktionslichtern. Der Spieler muss das leuchtende Reaktionslicht möglichst schnell mit einem Tap berühren. Sobald der Tap erkannt wurde, wird dieses Licht ausgeschaltet und ein zufälliges anderes Reaktionslicht eingeschaltet. Danach wiederholt sich der Ablauf.
 

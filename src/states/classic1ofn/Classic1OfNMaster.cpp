@@ -14,7 +14,7 @@ static void sendLightStateToPeer(uint8_t lightId, const message_t* message) {
 static void Classic1OfNMaster_process(cfsm_Ctx* fsm) {
     CtxPtr ctx = (CtxPtr)fsm->ctxPtr;
 
-    for (uint8_t lightId = 1; lightId < MAX_LIGHTS; lightId++) {
+    for (uint8_t lightId = 0; lightId < MAX_LIGHTS; lightId++) {
         if (!ctx->registeredLights[lightId]) {
             continue;
         }
@@ -23,7 +23,11 @@ static void Classic1OfNMaster_process(cfsm_Ctx* fsm) {
             ? classicMakeActiveLightMessage(ctx->groupId, lightId)
             : classicMakeInactiveLightMessage(ctx->groupId, lightId);
 
-        sendLightStateToPeer(lightId, &message);
+        if (lightId == ctx->lightId) {
+            ctx->light[lightId] = message;
+        } else {
+            sendLightStateToPeer(lightId, &message);
+        }
     }
 }
 
@@ -33,8 +37,9 @@ static void Classic1OfNMaster_event(cfsm_Ctx* fsm, int eventId) {
         return;
     }
 
-    message_t eventMessage = ctx->light[0];
-    if (eventMessage.messageType != MSG_SENSOR_EVENT || eventMessage.eventId != EVENT_TAP) {
+    message_t eventMessage = ctx->currentEventMessage;
+    if (eventMessage.messageType != MSG_SENSOR_EVENT ||
+        (eventMessage.eventId != EVENT_TAP && eventMessage.eventId != EVENT_SQUEEZE)) {
         return;
     }
 
@@ -54,7 +59,7 @@ uint8_t classicChooseNextLight(uint8_t currentLightId, const uint8_t* registered
     uint8_t alternativeCount = 0;
     uint8_t fallback = UNKNOWN_LIGHT_ID;
 
-    for (uint8_t lightId = 1; lightId < maxLights && lightId < MAX_LIGHTS; lightId++) {
+    for (uint8_t lightId = 0; lightId < maxLights && lightId < MAX_LIGHTS; lightId++) {
         if (!registeredLights[lightId]) {
             continue;
         }

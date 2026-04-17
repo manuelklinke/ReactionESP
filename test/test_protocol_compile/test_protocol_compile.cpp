@@ -17,6 +17,8 @@ static_assert(STATE_CLASSIC_1_OF_N == 1, "Classic state id must be 1");
 static_assert(MSG_REGISTER == 1, "Register message type must be 1");
 static_assert(MSG_STATE_SET == 3, "State-set message type must be 3");
 static_assert(EVENT_TAP == 1, "Tap event id must be 1");
+static_assert(EVENT_SQUEEZE == 6, "Squeeze event id must be 6");
+static_assert(EVENT_UNSQUEEZE == 7, "Unsqueeze event id must be 7");
 static_assert(sizeof(message_t) <= 64, "ESP-NOW message must stay compact");
 static_assert(offsetof(message_t, messageType) == 0, "messageType must be first");
 static_assert(offsetof(message_t, stateId) == 1, "stateId offset must remain stable");
@@ -84,6 +86,20 @@ void setup() {
     message_t ack = makeRegisterAckMessage(2, GROUP_A);
     bool ackOk = ack.messageType == MSG_REGISTER_ACK && ack.targetLightId == 2 && ack.groupId == GROUP_A;
     Serial.println(ackOk ? "register ack test passed" : "register ack test failed");
+
+    message_t squeezeMsg = makeSensorEventMessage(STATE_CLASSIC_1_OF_N, GROUP_A, 2, EVENT_SQUEEZE, 1);
+    bool squeezeOk = squeezeMsg.messageType == MSG_SENSOR_EVENT &&
+                     squeezeMsg.eventId == EVENT_SQUEEZE &&
+                     squeezeMsg.sourceLightId == 2 &&
+                     squeezeMsg.value == 1;
+    Serial.println(squeezeOk ? "squeeze event test passed" : "squeeze event test failed");
+
+    message_t unsqueezeMsg = makeSensorEventMessage(STATE_CLASSIC_1_OF_N, GROUP_A, 2, EVENT_UNSQUEEZE, 0);
+    bool unsqueezeOk = unsqueezeMsg.messageType == MSG_SENSOR_EVENT &&
+                       unsqueezeMsg.eventId == EVENT_UNSQUEEZE &&
+                       unsqueezeMsg.sourceLightId == 2 &&
+                       unsqueezeMsg.value == 0;
+    Serial.println(unsqueezeOk ? "unsqueeze event test passed" : "unsqueeze event test failed");
 
     uint8_t uid[4] = {0xDE, 0xAD, 0xBE, 0xEF};
     bool rfidOk = stateIdForRfidUid(nullptr, 0) == STATE_INIT &&

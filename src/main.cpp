@@ -38,6 +38,7 @@ Adafruit_NeoPixel strip = Adafruit_NeoPixel(8, 0, NEO_GRB + NEO_KHZ800);
 static struct Ctx Data;
 static app_event_queue_t EventQueue;
 uint8_t changes = 0;
+static uint8_t DisplayFlag = 0;
 
 /**
  * @brief CFSM state machine instance
@@ -68,6 +69,19 @@ message_t ReceivedMessage;
 
 uint8_t idByMacAdress(uint8_t* macAddr){
   return lightIdByMacAddress(macAddr);
+}
+
+static void queueLocalSensorEvent(const message_t* message) {
+    app_event_t event = {};
+    event.eventId = EVENT_NETWORK_MESSAGE;
+    event.stateId = message->stateId;
+    event.groupId = message->groupId;
+    event.sourceLightId = message->sourceLightId;
+    event.targetLightId = message->targetLightId;
+    event.message = *message;
+    if (!appEventQueuePush(&EventQueue, &event)) {
+      Serial.println("ignored, event queue full");
+    }
 }
 
 void messageSent(uint8_t *macAddr, uint8_t status) {
@@ -142,6 +156,7 @@ void setup(){
     Data.role = roleFromMasterSwitch(digitalRead(PIN_MASTER_SELECT));
     Data.isMaster = Data.role == ROLE_MASTER;
     if(Data.isMaster == 1){
+       Data.lightId = 0;
        Serial.println("MASTER");
     }
 
@@ -264,15 +279,14 @@ void setup(){
   Serial.println();
 }
  
-void loop(){
-    strip.clear();
+static void dispatchQueuedEventsToStateMachine() {
     app_event_t event = {};
     while (appEventQueuePop(&EventQueue, &event)) {
         if (event.eventId == EVENT_NETWORK_MESSAGE && event.message.messageType == MSG_STATE_SET) {
             Data.requestedStateId = event.message.stateId;
         }
         if (event.eventId == EVENT_NETWORK_MESSAGE) {
-            Data.light[0] = event.message;
+            Data.currentEventMessage = event.message;
             changes = 1;
         }
         if (event.eventId == EVENT_NETWORK_MESSAGE &&
@@ -295,20 +309,14 @@ void loop(){
         }
         cfsm_event(&stateMachine, event.eventId);
     }
-    cfsm_process(&stateMachine);
+}
 
-    uint8_t DisplayFlag = 0;
+static void readLocalSensorsIntoEvents() {
     byte AccInt1 = 0;
-    //byte AccInt2 = 0;
-    //uint8_t light_id = Data.lightId;
-    Data.groupId = groupFromSwitch(digitalRead(PIN_GROUP_SELECT));
+
     Data.light[Data.lightId].lightId = Data.lightId;
     Data.light[Data.lightId].groupId = Data.groupId;
 
-    u8g2.clearBuffer();
-          
-    //u8g2.sendBuffer();
-    
     if(digitalRead(PIN_TOUCH)==1){
       Data.light[Data.lightId].touched = 1;
       Serial.println("Touch!");
@@ -318,41 +326,67 @@ void loop(){
 
     Data.light[Data.lightId].modeAB = Data.groupId;
 
-
     if(Int1Flag == 1)
     {
       DisplayFlag = 10;
       AccInt1 = accSens.readAndClearInterrupts();
-      
+
       if(accSens.checkInterrupt(AccInt1, ADXL345_SINGLE_TAP))
       {
         Serial.println("TAP!");
         Data.light[Data.lightId].tap = 1;
 
-        if (Data.role == ROLE_LIGHT) {
-          message_t tapMessage = makeSensorEventMessage(Data.stateId, Data.groupId, Data.lightId, EVENT_TAP, millis());
+        message_t tapMessage = makeSensorEventMessage(Data.stateId, Data.groupId, Data.lightId, EVENT_TAP, millis());
+        if (Data.role == ROLE_MASTER) {
+          queueLocalSensorEvent(&tapMessage);
+        } else {
           if(esp_now_send(MasterAddress, (uint8_t*)&tapMessage, sizeof(tapMessage)) == 0){
             Serial.println("Send!");
           }
         }
 
         changes = 1;
-        
       }
-      /*if(accSens.checkInterrupt(AccInt1, ADXL345_DOUBLE_TAP))
-      {
-        
-      }*/
       Int1Flag =0;
     }
-   
+
     if (bmp.takeForcedMeasurement()) {
-      if((bmp.readPressure() + PRESSURE_OFFSET)> Data.initialPressure){
-        //Data.squeezed[Data.lightId] = 1;
+      uint8_t wasSqueezed = Data.light[Data.lightId].squeezed;
+      uint8_t isSqueezed = (bmp.readPressure() + PRESSURE_OFFSET) > Data.initialPressure;
+      Data.light[Data.lightId].squeezed = isSqueezed;
+
+      if (isSqueezed && !wasSqueezed) {
+        message_t squeezeMessage = makeSensorEventMessage(Data.stateId, Data.groupId, Data.lightId, EVENT_SQUEEZE, 1);
+        squeezeMessage.squeezed = 1;
+        if (Data.role == ROLE_MASTER) {
+          queueLocalSensorEvent(&squeezeMessage);
+        } else {
+          if(esp_now_send(MasterAddress, (uint8_t*)&squeezeMessage, sizeof(squeezeMessage)) == 0){
+            Serial.println("Squeeze send!");
+          }
+        }
+        changes = 1;
+      }
+      if (!isSqueezed && wasSqueezed) {
+        message_t unsqueezeMessage = makeSensorEventMessage(Data.stateId, Data.groupId, Data.lightId, EVENT_UNSQUEEZE, 0);
+        unsqueezeMessage.squeezed = 0;
+        if (Data.role == ROLE_MASTER) {
+          queueLocalSensorEvent(&unsqueezeMessage);
+        } else {
+          if(esp_now_send(MasterAddress, (uint8_t*)&unsqueezeMessage, sizeof(unsqueezeMessage)) == 0){
+            Serial.println("Unsqueeze send!");
+          }
+        }
+        changes = 1;
       }
     }
+}
 
-  if (Data.role == ROLE_MASTER && (millis() - Data.lastRfidPollMillis) >= 250UL) {
+static void pollMasterRfidIfNeeded() {
+    if (Data.role != ROLE_MASTER || (millis() - Data.lastRfidPollMillis) < 250UL) {
+      return;
+    }
+
     Data.lastRfidPollMillis = millis();
     uint8_t selectedStateId = STATE_INIT;
     // PN532 readPassiveTargetID can block until a card is read on this hardware setup.
@@ -367,34 +401,39 @@ void loop(){
         }
       }
     }
-  }
+}
 
-  message_t localLight = Data.light[Data.lightId];
-  for (uint8_t i=0; i < 8; i++)
-  {
-    strip.setPixelColor(i, localLight.color_r, localLight.color_g, localLight.color_b);
-  }
-  strip.show();
-  changes = 0;
+static void renderLocalOutputs() {
+    u8g2.clearBuffer();
 
-  
-  //u8g2.clearBuffer();
-  if(DisplayFlag > 0){
-    
-    u8g2.setFont(u8g2_font_ncenB08_tr);
-    u8g2.drawStr(0,10,"TAP!");
+    message_t localLight = Data.light[Data.lightId];
+    for (uint8_t i=0; i < 8; i++)
+    {
+      strip.setPixelColor(i, localLight.color_r, localLight.color_g, localLight.color_b);
+    }
+    strip.show();
+    changes = 0;
+
+    if(DisplayFlag > 0){
+      u8g2.setFont(u8g2_font_ncenB08_tr);
+      u8g2.drawStr(0,10,"TAP!");
+      DisplayFlag--;
+    }else{
+      Data.light[3].tap = 0;
+      Data.light[2].tap = 0;
+      Data.light[0].tap = 0;
+    }
     u8g2.sendBuffer();
+}
 
-    DisplayFlag--;    
-  }else{
-    Data.light[3].tap = 0;
-    Data.light[2].tap = 0;
-    Data.light[0].tap = 0;
-    
-  }
-  u8g2.sendBuffer();
-  delay(100);
-  
+void loop(){
+    Data.groupId = groupFromSwitch(digitalRead(PIN_GROUP_SELECT));
+    readLocalSensorsIntoEvents();
+    pollMasterRfidIfNeeded();
+    dispatchQueuedEventsToStateMachine();
+    cfsm_process(&stateMachine);
+    renderLocalOutputs();
+    delay(10);
 }
 //#endif
 

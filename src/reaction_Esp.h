@@ -32,7 +32,9 @@ enum EventId : uint8_t {
     EVENT_TOUCH = 2,
     EVENT_RFID_TAG = 3,
     EVENT_NETWORK_MESSAGE = 4,
-    EVENT_TIMER = 5
+    EVENT_TIMER = 5,
+    EVENT_SQUEEZE = 6,
+    EVENT_UNSQUEEZE = 7
 };
 
 enum NodeRole : uint8_t {
@@ -82,9 +84,10 @@ typedef struct Ctx {
     uint8_t registeredLights[MAX_LIGHTS];
     uint64_t timerValue;
     uint32_t lastRegisterMillis;
-    uint32_t lastRfidPollMillis;
+	uint32_t lastRfidPollMillis;
 	float	initialPressure;  
-    
+
+	message_t currentEventMessage;
 	message_t light[MAX_LIGHTS];
 } Ctx, * CtxPtr ;
 
