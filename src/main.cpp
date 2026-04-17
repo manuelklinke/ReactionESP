@@ -9,6 +9,7 @@
 #include <Adafruit_BMP280.h>
 #include <Adafruit_NeoPixel.h>
 #include "reaction_Esp.h"
+#include "app/NodeConfig.h"
 #include "stm.h"
 #include "states/InitState.h"
 
@@ -37,10 +38,10 @@ uint8_t changes = 0;
 /**
  * @brief CFSM state machine instance
  */
-//static cfsm_Ctx stateMachine;
+static cfsm_Ctx stateMachine;
 
-char Int1Flag = 0;
-char Int2Flag = 0;
+volatile char Int1Flag = 0;
+volatile char Int2Flag = 0;
 
 void IRAM_ATTR ISR1() {
     Int1Flag = 1;
@@ -52,15 +53,7 @@ void IRAM_ATTR ISR2() {
     //detachInterrupt(25);
 }
 
-//#ifdef SENSEI
-//uint8_t MasterAddress[] = {0xBC, 0xFF, 0x4D, 0x85, 0x7A, 0x00};
-uint8_t MasterAddress[] = {0xCC, 0x7B, 0x5C, 0x4F, 0xD2, 0x84};
 uint8_t broadcastAddress[] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
-uint8_t SlaveAddress[3][6] =  {{0xD8, 0xBF, 0xC0, 0x17, 0xA6, 0x9A},
-                                  {0xCC, 0x7B, 0x5C, 0x50, 0x25, 0x1D},
-                                  {0xCC, 0x7B, 0x5C, 0x4F, 0xDE, 0x3B}};
-
-
 
 uint8_t myAdress[] = {0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
 
@@ -71,22 +64,7 @@ message_t MessageToBeSent[3];
 message_t ReceivedMessage; 
 
 uint8_t idByMacAdress(uint8_t* macAddr){
-  uint8_t id=0;
-  
-  if(macAddr[5]== 0x84){
-    id = 0;
-  }
-  if(macAddr[5]== 0x9A){
-    id = 1;
-  }
-  if(macAddr[5]== 0x1D){
-    id = 2;
-  }
-  if(macAddr[5]== 0x3B){
-    id = 3;
-  }
-
-  return id;
+  return lightIdByMacAddress(macAddr);
 }
 
 void messageSent(uint8_t *macAddr, uint8_t status) {
@@ -106,16 +84,31 @@ void messageSent(uint8_t *macAddr, uint8_t status) {
 }
 
 void messageReceived(uint8_t* macAddr, uint8_t* incomingData, uint8_t len){
-    uint8_t id = 0;
+    uint8_t id = UNKNOWN_LIGHT_ID;
+    uint8_t targetId = UNKNOWN_LIGHT_ID;
+
+    if(len != sizeof(ReceivedMessage)){
+      Serial.print("Unexpected message size: ");
+      Serial.println(len);
+      return;
+    }
+
     memcpy(&ReceivedMessage, incomingData, sizeof(ReceivedMessage));
     Serial.printf("Incoming Message from: %02X:%02X:%02X:%02X:%02X:%02X \n\r", 
             macAddr[0], macAddr[1], macAddr[2], macAddr[3], macAddr[4], macAddr[5]);    
     Serial.print("Message recived ");
-    id = idByMacAdress(macAddr);
 
-    if((id >= 0)&&(id <= 7)){
+    if(!messageMatchesGroup(Data.groupId, ReceivedMessage.groupId)){
+      Serial.println("ignored, different group");
+      return;
+    }
+
+    id = idByMacAdress(macAddr);
+    targetId = ReceivedMessage.lightId < MAX_LIGHTS ? ReceivedMessage.lightId : id;
+
+    if(targetId < MAX_LIGHTS){
       
-      memcpy(&Data.light[id], &ReceivedMessage, sizeof(ReceivedMessage));
+      memcpy(&Data.light[targetId], &ReceivedMessage, sizeof(ReceivedMessage));
       // Data.light[id].lightId = ReceivedMessage.lightId;
       // Data.light[id].squeezed = ReceivedMessage.squeezed;
       // Data.light[id].tap = ReceivedMessage.tap;
@@ -125,7 +118,9 @@ void messageReceived(uint8_t* macAddr, uint8_t* incomingData, uint8_t len){
       // Data.light[id].color_g = ReceivedMessage.color_g;
       // Data.light[id].color_b = ReceivedMessage.color_b;
       changes = 1;
-      Serial.println(Data.light[id].color_b);
+      Serial.println(Data.light[targetId].color_b);
+    }else{
+      Serial.println("ignored, unknown sender/target");
     }
 }
 
@@ -163,6 +158,12 @@ void setup(){
        Serial.println("MASTER");
        Data.isMaster = 1;
     }
+
+    Data.groupId = groupFromSwitch(digitalRead(14));
+    Data.light[Data.lightId].lightId = Data.lightId;
+    Data.light[Data.lightId].groupId = Data.groupId;
+    Serial.print("GROUP ");
+    Serial.println(Data.groupId == GROUP_A ? "A" : "B");
    
 
     Serial.println("Setup Acc");
@@ -241,17 +242,12 @@ void setup(){
     if(Data.isMaster == 1){
       uint8_t result;
       esp_now_set_self_role(ESP_NOW_ROLE_CONTROLLER);
-      /*result = esp_now_add_peer(SlaveAddress[0], ESP_NOW_ROLE_COMBO, CHANNEL, NULL, 0);
-      if(result != 0){
-          Serial.println("Failed to add peer1");
-      }*/
-      result = esp_now_add_peer(SlaveAddress[1], ESP_NOW_ROLE_SLAVE, CHANNEL, NULL, 0);
-      if(result != 0){
-          Serial.println("Failed to add peer2");
-      }
-      result = esp_now_add_peer(SlaveAddress[2], ESP_NOW_ROLE_SLAVE, CHANNEL, NULL, 0);
-      if(result != 0){
-          Serial.println("Failed to add peer3");
+      for(uint8_t i = 0; i < 3; i++){
+        result = esp_now_add_peer(SlaveAddress[i], ESP_NOW_ROLE_SLAVE, CHANNEL, NULL, 0);
+        if(result != 0){
+            Serial.print("Failed to add peer");
+            Serial.println(i + 1);
+        }
       }
     }else{
       esp_now_set_self_role(ESP_NOW_ROLE_SLAVE);
@@ -271,19 +267,23 @@ void setup(){
   delay(3000);  
   
 
-  //cfsm_init(&stateMachine, &Data);
-  //cfsm_transition(&stateMachine, InitState_enter);
+  cfsm_init(&stateMachine, &Data);
+  cfsm_transition(&stateMachine, InitState_enter);
 
   Serial.println();
 }
  
 void loop(){
     strip.clear();
+    cfsm_process(&stateMachine);
 
     uint8_t DisplayFlag = 0;
     byte AccInt1 = 0;
     //byte AccInt2 = 0;
-    uint8_t light_id = Data.lightId;
+    //uint8_t light_id = Data.lightId;
+    Data.groupId = groupFromSwitch(digitalRead(14));
+    Data.light[Data.lightId].lightId = Data.lightId;
+    Data.light[Data.lightId].groupId = Data.groupId;
 
     u8g2.clearBuffer();
           
@@ -296,12 +296,7 @@ void loop(){
       Data.light[Data.lightId].touched = 0;
     }
 
-    if(digitalRead(14)==1){
-      Data.light[Data.lightId].modeAB = 1;
-      //Serial.println("AB!");
-    }else{
-      Data.light[Data.lightId].modeAB = 0;
-    }
+    Data.light[Data.lightId].modeAB = Data.groupId;
 
 
     if(Int1Flag == 1)
@@ -322,8 +317,10 @@ void loop(){
           //Data.light[3].color_b = 255;
         
         }else{
+          memcpy(&MessageToBeSent[0], &Data.light[Data.lightId], sizeof(MessageToBeSent[0]));
           MessageToBeSent[0].tap = 1;
           MessageToBeSent[0].lightId = Data.lightId;
+          MessageToBeSent[0].groupId = Data.groupId;
           if(esp_now_send(MasterAddress, (uint8_t *) &MessageToBeSent[0], sizeof(MessageToBeSent[0])) == 0){
             Serial.println("Send!");
           }
@@ -441,9 +438,12 @@ void loop(){
         
       }
 
-      for(int i=1; i<3; i++){
-        memcpy(&MessageToBeSent[i], &Data.light[i+1], sizeof(message_t));
-        esp_now_send(SlaveAddress[i+1], (uint8_t *) &MessageToBeSent[i], sizeof(MessageToBeSent));
+      for(uint8_t i=0; i<3; i++){
+        uint8_t targetLightId = i + 1;
+        memcpy(&MessageToBeSent[i], &Data.light[targetLightId], sizeof(MessageToBeSent[i]));
+        MessageToBeSent[i].lightId = targetLightId;
+        MessageToBeSent[i].groupId = Data.groupId;
+        esp_now_send(SlaveAddress[i], (uint8_t *) &MessageToBeSent[i], sizeof(MessageToBeSent[i]));
       }
       //memcpy(&MessageToBeSent[2], &Data.light[3], sizeof(message_t));
       //esp_now_send(SlaveAddress[2], (uint8_t *) &MessageToBeSent[2], sizeof(MessageToBeSent));

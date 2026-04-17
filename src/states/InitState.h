@@ -1,18 +1,8 @@
-/*******************************************************************************
-    DESCRIPTION
-*******************************************************************************/
-/**
- * @brief  Blink CFSM example: ON State Definitons
- *
- */
+#ifndef SRC_STATES_INITSTATE_H
+#define SRC_STATES_INITSTATE_H
 
-#ifndef SRC_C_INITSTATE_C_INITSTATE_H_
-#define SRC_C_INITSTATE_C_INITSTATE_H_
+#include "stm.h"
 
-/**
- * @brief Operation for entering Init
- * @param fsm FSM data structure
- */
-extern void InitState_enter(struct cfsm_Ctx * StateMachine);
+extern void InitState_enter(struct cfsm_Ctx* stateMachine);
 
-#endif 
+#endif
