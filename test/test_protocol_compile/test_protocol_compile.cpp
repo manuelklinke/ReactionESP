@@ -3,6 +3,7 @@
 #include <type_traits>
 #include "app/NodeConfig.h"
 #include "app/Protocol.h"
+#include "app/RfidTask.h"
 #include "states/InitState.h"
 #include "states/StateRegistry.h"
 #include "reaction_Esp.h"
@@ -83,6 +84,11 @@ void setup() {
     message_t ack = makeRegisterAckMessage(2, GROUP_A);
     bool ackOk = ack.messageType == MSG_REGISTER_ACK && ack.targetLightId == 2 && ack.groupId == GROUP_A;
     Serial.println(ackOk ? "register ack test passed" : "register ack test failed");
+
+    uint8_t uid[4] = {0xDE, 0xAD, 0xBE, 0xEF};
+    bool rfidOk = stateIdForRfidUid(nullptr, 0) == STATE_INIT &&
+                  stateIdForRfidUid(uid, sizeof(uid)) == STATE_CLASSIC_1_OF_N;
+    Serial.println(rfidOk ? "rfid state test passed" : "rfid state test failed");
 
     Serial.println(registerOk && stateOk ? "protocol helper test passed" : "protocol helper test failed");
 }

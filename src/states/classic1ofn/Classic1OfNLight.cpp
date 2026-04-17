@@ -5,8 +5,21 @@ static void Classic1OfNLight_process(cfsm_Ctx* fsm) {
 }
 
 static void Classic1OfNLight_event(cfsm_Ctx* fsm, int eventId) {
-    (void)fsm;
-    (void)eventId;
+    CtxPtr ctx = (CtxPtr)fsm->ctxPtr;
+    if (eventId != EVENT_NETWORK_MESSAGE) {
+        return;
+    }
+
+    message_t message = ctx->light[ctx->lightId];
+    if (message.messageType != MSG_LIGHT_STATE) {
+        return;
+    }
+
+    if (message.targetLightId != ctx->lightId) {
+        return;
+    }
+
+    ctx->light[ctx->lightId] = message;
 }
 
 void Classic1OfNLight_enter(cfsm_Ctx* stateMachine) {

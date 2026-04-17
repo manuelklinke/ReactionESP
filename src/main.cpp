@@ -12,6 +12,7 @@
 #include "app/AppEvents.h"
 #include "app/Protocol.h"
 #include "app/NodeConfig.h"
+#include "app/RfidTask.h"
 #include "stm.h"
 #include "states/InitState.h"
 
@@ -63,7 +64,6 @@ uint8_t myAdress[] = {0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
 
 
 
-message_t MessageToBeSent[3]; 
 message_t ReceivedMessage; 
 
 uint8_t idByMacAdress(uint8_t* macAddr){
@@ -275,7 +275,14 @@ void loop(){
             Data.light[0] = event.message;
             changes = 1;
         }
-        if (Data.role == ROLE_MASTER && event.message.messageType == MSG_REGISTER) {
+        if (event.eventId == EVENT_NETWORK_MESSAGE &&
+            event.message.messageType == MSG_LIGHT_STATE &&
+            event.message.targetLightId < MAX_LIGHTS) {
+            Data.light[event.message.targetLightId] = event.message;
+        }
+        if (event.eventId == EVENT_NETWORK_MESSAGE &&
+            Data.role == ROLE_MASTER &&
+            event.message.messageType == MSG_REGISTER) {
             uint8_t lightId = event.message.sourceLightId;
             if (lightId < MAX_LIGHTS) {
                 Data.registeredLights[lightId] = 1;
@@ -321,25 +328,13 @@ void loop(){
       {
         Serial.println("TAP!");
         Data.light[Data.lightId].tap = 1;
-        
-        if(Data.isMaster == 1){
-          Data.light[0].tap = 1;
-          //esp_now_send(receiverAddress, (uint8_t *) &MessageToBeSent, sizeof(MessageToBeSent));
-          //Data.light[0].color_r = 255;
-          //Data.light[2].color_g = 255;
-          //Data.light[3].color_b = 255;
-        
-        }else{
-          memcpy(&MessageToBeSent[0], &Data.light[Data.lightId], sizeof(MessageToBeSent[0]));
-          MessageToBeSent[0].tap = 1;
-          MessageToBeSent[0].lightId = Data.lightId;
-          MessageToBeSent[0].groupId = Data.groupId;
-          if(esp_now_send(MasterAddress, (uint8_t *) &MessageToBeSent[0], sizeof(MessageToBeSent[0])) == 0){
+
+        if (Data.role == ROLE_LIGHT) {
+          message_t tapMessage = makeSensorEventMessage(Data.stateId, Data.groupId, Data.lightId, EVENT_TAP, millis());
+          if(esp_now_send(MasterAddress, (uint8_t*)&tapMessage, sizeof(tapMessage)) == 0){
             Serial.println("Send!");
           }
         }
-
-        //MessageToBeSent[Data.lightId].tap = 0;
 
         changes = 1;
         
@@ -351,127 +346,36 @@ void loop(){
       Int1Flag =0;
     }
    
-    /*if (bmp.takeForcedMeasurement()) {
+    if (bmp.takeForcedMeasurement()) {
       if((bmp.readPressure() + PRESSURE_OFFSET)> Data.initialPressure){
         //Data.squeezed[Data.lightId] = 1;
-        for (uint8_t i=0; i < 8; i++)
-        {
-          strip.setPixelColor(i,0, 128, 0);
-        }
-      }else{
-        for (uint8_t i=0; i < 8; i++)
-        {
-          strip.setPixelColor(i,0, 0, 0);
-        }
-      }
-    }*/
-  
-
-  /*if(Data.isMaster == 1){
-  boolean success;
-  uint8_t uid[] = { 0, 0, 0, 0, 0, 0, 0 };	// Buffer to store the returned UID
-  uint8_t uidLength;				// Length of the UID (4 or 7 bytes depending on ISO14443A card type)
-  if(Int2Flag == 1){
-    // Wait for an ISO14443A type cards (Mifare, etc.).  When one is found
-    // 'uid' will be populated with the UID, and uidLength will indicate
-    // if the uid is 4 bytes (Mifare Classic) or 7 bytes (Mifare Ultralight)
-    success = nfc.readPassiveTargetID(PN532_MIFARE_ISO14443A, &uid[0], &uidLength);
-
-    if (success) {
-      Serial.println("Found a card!");
-      Serial.print("UID Length: ");Serial.print(uidLength, DEC);Serial.println(" bytes");
-      Serial.print("UID Value: ");
-      for (uint8_t i=0; i < uidLength; i++)
-      {
-        Serial.print(" 0x");Serial.print(uid[i], HEX);
-      }
-      Serial.println("");
-    // Wait 1 second before continuing
-      for (uint8_t i=0; i < 8; i++)
-      {
-      strip.setPixelColor(i,128, 0, 0);
       }
     }
-    else
-    {
-      // PN532 probably timed out waiting for a card
-      Serial.println("Timed out waiting for a card");
+
+  if (Data.role == ROLE_MASTER && (millis() - Data.lastRfidPollMillis) >= 250UL) {
+    Data.lastRfidPollMillis = millis();
+    uint8_t selectedStateId = STATE_INIT;
+    // PN532 readPassiveTargetID can block until a card is read on this hardware setup.
+    // Keep RFID polling isolated here so game states do not contain blocking reader logic.
+    if (pollRfidForState(&nfc, &selectedStateId) && selectedStateId != STATE_INIT) {
+      Data.requestedStateId = selectedStateId;
+      message_t stateMessage = makeStateSetMessage(selectedStateId, Data.groupId);
+      for (uint8_t lightId = 1; lightId <= STATIC_SLAVE_COUNT; lightId++) {
+        uint8_t peerAddress[6] = {};
+        if (copyPeerAddressForLight(lightId, peerAddress)) {
+          esp_now_send(peerAddress, (uint8_t*)&stateMessage, sizeof(stateMessage));
+        }
+      }
     }
-    Int2Flag = 0;
-    //nfc.startPassiveTargetIDDetection(PN532_MIFARE_ISO14443A);
   }
-  }*/
-  //strip.show();
 
-  if(changes == 1){
-
-    
-    if(Data.isMaster == 1){
-
-      if(Data.light[0].tap == 1){
-        Data.light[0].color_r = 255;
-        Data.light[2].color_r = 255;
-        Data.light[3].color_r = 255;
-        Data.light[0].color_g = 0;
-        Data.light[2].color_g = 0;
-        Data.light[3].color_g = 0;
-        Data.light[0].color_b = 0;
-        Data.light[2].color_b = 0;
-        Data.light[3].color_b = 0;
-        Serial.println("Tap0");
-      }else{
-        
-      }
-      if(Data.light[2].tap == 1){
-        Data.light[0].color_r = 0;
-        Data.light[2].color_r = 0;
-        Data.light[3].color_r = 0;
-        Data.light[0].color_g = 255;
-        Data.light[2].color_g = 255;
-        Data.light[3].color_g = 255;
-        Data.light[0].color_b = 0;
-        Data.light[2].color_b = 0;
-        Data.light[3].color_b = 0;
-        Serial.println("Tap2");
-      }else{
-        
-      }
-      if(Data.light[3].tap == 1){
-        Data.light[0].color_r = 0;
-        Data.light[2].color_r = 0;
-        Data.light[3].color_r = 0;
-        Data.light[0].color_g = 0;
-        Data.light[2].color_g = 0;
-        Data.light[3].color_g = 0;
-        Data.light[0].color_b = 255;
-        Data.light[2].color_b = 255;
-        Data.light[3].color_b = 255;
-        Serial.println("Tap3");
-      }else{
-        
-      }
-
-      for(uint8_t i=0; i<3; i++){
-        uint8_t targetLightId = i + 1;
-        memcpy(&MessageToBeSent[i], &Data.light[targetLightId], sizeof(MessageToBeSent[i]));
-        MessageToBeSent[i].lightId = targetLightId;
-        MessageToBeSent[i].groupId = Data.groupId;
-        esp_now_send(SlaveAddress[i], (uint8_t *) &MessageToBeSent[i], sizeof(MessageToBeSent[i]));
-      }
-      //memcpy(&MessageToBeSent[2], &Data.light[3], sizeof(message_t));
-      //esp_now_send(SlaveAddress[2], (uint8_t *) &MessageToBeSent[2], sizeof(MessageToBeSent));
-      //Data.light[0].color_r = 0;
-      //Data.light[2].color_g = 0;
-      //Data.light[3].color_b = 0;
-      
-    }
-    for (uint8_t i=0; i < 8; i++)
-    {
-      strip.setPixelColor(i,Data.light[Data.lightId].color_r, Data.light[Data.lightId].color_g, Data.light[Data.lightId].color_b);
-    }
+  message_t localLight = Data.light[Data.lightId];
+  for (uint8_t i=0; i < 8; i++)
+  {
+    strip.setPixelColor(i, localLight.color_r, localLight.color_g, localLight.color_b);
+  }
   strip.show();
   changes = 0;
-  }
 
   
   //u8g2.clearBuffer();
